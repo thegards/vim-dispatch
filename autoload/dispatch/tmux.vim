@@ -8,6 +8,23 @@ let g:autoloaded_dispatch_tmux = 1
 let s:waiting = {}
 let s:make_pane = tempname()
 
+function! dispatch#tmux#prepare_tmux_command(request,session) abort
+  let title = shellescape(a:request.title)
+  let height = get(g:, 'dispatch_tmux_height', get(g:, 'dispatch_quickfix_height', 10))
+  if get(a:request, 'background', 0) || (height <= 0 && dispatch#has_callback())
+    let cmd = 'new-window'
+    let cmd_args = '-d -n '.title
+  elseif has('gui_running') || empty($TMUX) || (!empty(''.a:session) && a:session !=# system('tmux display-message -p "#S"')[0:-2])
+    let cmd = 'new-window'
+    let cmd_args = '-n '.title
+  else
+    let cmd = 'split-window'
+    let cmd_args = '-d -l '.(height < 0 ? -height : height)
+  endif
+
+  return 'tmux ' . cmd . ' ' . cmd_args . ' ' . dispatch#shellescape('-P', '-t', a:session.':')
+endfunction
+
 function! dispatch#tmux#handle(request) abort
   let session = get(g:, 'tmux_session', '')
   if empty($TMUX) && empty(''.session) || !executable('tmux')
@@ -24,11 +41,7 @@ function! dispatch#tmux#handle(request) abort
     endif
     return dispatch#tmux#make(a:request)
   elseif a:request.action ==# 'start'
-    let command = 'tmux new-window -P -t '.shellescape(session.':')
-    let command .= ' -n '.shellescape(a:request.title)
-    if a:request.background
-      let command .= ' -d'
-    endif
+    let command = dispatch#tmux#prepare_tmux_command(a:request, session)
     let command .= ' ' . shellescape('exec ' . dispatch#isolate(
           \ a:request, ['TMUX', 'TMUX_PANE'],
           \ dispatch#set_title(a:request),
@@ -47,17 +60,8 @@ function! dispatch#tmux#make(request) abort
         \ (pipepane ? [a:request.expanded . '; echo ' . dispatch#status_var()
         \  . ' > ' . a:request.file . '.complete'] : [])))
 
-  let title = shellescape(a:request.title)
-  let height = get(g:, 'dispatch_tmux_height', get(g:, 'dispatch_quickfix_height', 10))
-  if get(a:request, 'background', 0) || (height <= 0 && dispatch#has_callback())
-    let cmd = 'new-window -d -n '.title
-  elseif has('gui_running') || empty($TMUX) || (!empty(''.session) && session !=# system('tmux display-message -p "#S"')[0:-2])
-    let cmd = 'new-window -n '.title
-  else
-    let cmd = 'split-window -l '.(height < 0 ? -height : height).' -d'
-  endif
-
-  let cmd .= ' ' . dispatch#shellescape('-P', '-t', session.':', 'exec ' . script)
+  let cmd = dispatch#tmux#prepare_tmux_command(a:request,session)
+  let cmd .= ' ' . dispatch#shellescape('exec ' . script)
 
   let filter = 'sed'
   let uname = system('uname')[0:-2]
@@ -73,7 +77,7 @@ function! dispatch#tmux#make(request) abort
   let filter .= " -e \"s/\e\\[[0-9;]*m//g\""
   let filter .= " -e \"s/\017//g\""
   let filter .= " > " . a:request.file . ""
-  call system('tmux ' . cmd . '|tee ' . s:make_pane .
+  call system(cmd . '|tee ' . s:make_pane .
         \ (pipepane ? '|xargs -I {} tmux pipe-pane -t {} '.shellescape(filter) : ''))
 
   let pane = s:pane_id(get(readfile(s:make_pane, '', 1), 0, ''))
